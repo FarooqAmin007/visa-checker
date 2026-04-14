@@ -8,30 +8,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
       - name: Run script
-        continue-on-error: true
-        run: |
-          pip install requests beautifulsoup4
-          python - <<EOF
-          import requests
-          from bs4 import BeautifulSoup
-
-          URL = "https://travel.state.gov/content/travel/en/legal/visa-law0/visa-bulletin.html"
-          NTFY = "https://ntfy.sh/visa-bulletin-rauf"
-
-          res = requests.get(URL)
-          soup = BeautifulSoup(res.text, "html.parser")
-
-          found = None
-          for a in soup.find_all("a"):
-              text = a.get_text(strip=True)
-              if "Visa Bulletin For" in text:
-                  found = text
-                  break
-
-          print("Latest:", found)
-
-          if found:
-              requests.post(NTFY, data=f"📢 {found}".encode("utf-8"))
-              print("Notification sent")
-          EOF
+        run: python visa_check.py
