@@ -10,31 +10,27 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v3
-        with:
-          persist-credentials: true
 
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.10"
 
-      - name: Install dependencies
+      - name: Install packages
         run: pip install -r requirements.txt
 
       - name: Run script
         run: python visa_check.py
 
-      - name: Save state
+      - name: Save state (force push)
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          git pull origin main --rebase
-
           git add last.txt
 
-          git diff --cached --quiet || git commit -m "update"
+          git commit -m "update" || echo "no change"
 
-          git push origin main
+          git push --force
