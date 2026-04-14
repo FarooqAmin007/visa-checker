@@ -1,8 +1,6 @@
 name: Visa Checker
 
 on:
-  schedule:
-    - cron: "0 */3 * * *"
   workflow_dispatch:
 
 jobs:
@@ -10,16 +8,29 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Run Python directly
+        run: |
+          pip install requests beautifulsoup4
+          python - <<EOF
+          import requests
+          from bs4 import BeautifulSoup
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
+          URL = "https://travel.state.gov/content/travel/en/legal/visa-law0/visa-bulletin.html"
+          NTFY = "https://ntfy.sh/visa-bulletin-rauf"
 
-      - name: Install packages
-        run: pip install requests beautifulsoup4
+          res = requests.get(URL)
+          soup = BeautifulSoup(res.text, "html.parser")
 
-      - name: Run script
-        run: python visa_check.py
+          found = None
+          for a in soup.find_all("a"):
+              text = a.get_text(strip=True)
+              if "Visa Bulletin For" in text:
+                  found = text
+                  break
+
+          print("Latest:", found)
+
+          if found:
+              requests.post(NTFY, data=f"📢 {found}".encode("utf-8"))
+              print("Notification sent")
+          EOF
