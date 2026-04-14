@@ -1,6 +1,8 @@
 name: Visa Checker
 
 on:
+  schedule:
+    - cron: "0 */3 * * *"   # every 3 hours
   workflow_dispatch:
 
 jobs:
@@ -8,16 +10,31 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          persist-credentials: true
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
           python-version: "3.10"
 
       - name: Install dependencies
-        run: pip install requests beautifulsoup4
+        run: pip install -r requirements.txt
 
       - name: Run script
         run: python visa_check.py
+
+      - name: Commit and push if changed
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          git pull origin main --rebase
+
+          git add last.txt
+
+          git diff --cached --quiet || git commit -m "update last bulletin"
+
+          git push origin main
