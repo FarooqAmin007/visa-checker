@@ -3,14 +3,20 @@ name: Visa Checker
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   run:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Run Python directly
+      - name: Setup Python
         run: |
           pip install requests beautifulsoup4
+
+      - name: Run script
+        run: |
           python - <<EOF
           import requests
           from bs4 import BeautifulSoup
