@@ -2,7 +2,7 @@ name: Visa Checker
 
 on:
   schedule:
-    - cron: "0 */3 * * *"   # every 3 hours
+    - cron: "0 */3 * * *"
   workflow_dispatch:
 
 jobs:
@@ -26,7 +26,7 @@ jobs:
       - name: Run script
         run: python visa_check.py
 
-      - name: Commit and push if changed
+      - name: Save state
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
@@ -35,6 +35,6 @@ jobs:
 
           git add last.txt
 
-          git diff --cached --quiet || git commit -m "update last bulletin"
+          git diff --cached --quiet || git commit -m "update"
 
           git push origin main
