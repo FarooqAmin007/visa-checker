@@ -24,10 +24,5 @@ jobs:
       - name: Run script
         run: python visa_check.py
 
-      - name: Save state
-        run: |
-          git config --global user.name "bot"
-          git config --global user.email "bot@github.com"
-          git add last.txt
-          git commit -m "update" || echo "no change"
-          git push
+      - name: Finish
+        run: echo "done"
