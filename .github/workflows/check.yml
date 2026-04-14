@@ -24,10 +24,12 @@ jobs:
       - name: Run script
         run: python visa_check.py
 
-      - name: Save state (force push)
+      - name: Save state
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          touch last.txt
 
           git add last.txt
 
