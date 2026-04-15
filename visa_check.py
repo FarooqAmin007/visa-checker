@@ -1,10 +1,25 @@
 import requests
 from bs4 import BeautifulSoup
 import os
+from datetime import datetime
 
 MAIN_URL = "https://travel.state.gov/content/travel/en/legal/visa-law0/visa-bulletin.html"
 BASE_URL = "https://travel.state.gov"
 NTFY = "https://ntfy.sh/visa-bulletin-rauf"
+
+def parse_date(d):
+    try:
+        return datetime.strptime(d, "%d%b%Y")
+    except:
+        return None
+
+def calc_progress(old, new):
+    if not old or not new:
+        return ""
+    diff = (new.year - old.year) * 12 + (new.month - old.month)
+    if diff > 0:
+        return f" (+{diff} months)"
+    return " (no change)"
 
 def get_latest_link():
     res = requests.get(MAIN_URL)
@@ -13,8 +28,7 @@ def get_latest_link():
     for a in soup.find_all("a"):
         text = a.get_text(strip=True)
         if "Visa Bulletin For" in text:
-            link = BASE_URL + a.get("href")
-            return text, link
+            return text, BASE_URL + a.get("href")
     return None, None
 
 def get_f4_data(url):
@@ -46,25 +60,29 @@ if not title:
     print("Error")
     exit()
 
-print("Latest:", title)
-
 # read old
 if os.path.exists("last.txt"):
     with open("last.txt", "r") as f:
-        old = f.read().strip()
+        old = f.read().split("|")
 else:
-    old = ""
+    old = ["", "", ""]
 
-final_action, filing_date = get_f4_data(link)
+old_title, old_A, old_B = old
 
-new_data = f"{title}|{final_action}|{filing_date}"
+new_A, new_B = get_f4_data(link)
 
-if new_data != old:
+progress_A = calc_progress(parse_date(old_A), parse_date(new_A))
+progress_B = calc_progress(parse_date(old_B), parse_date(new_B))
+
+new_data = f"{title}|{new_A}|{new_B}"
+
+if new_data != "|".join(old):
+
     message = f"""📢 {title}
 
 F4 Category:
-A (Final): {final_action}
-B (Filing): {filing_date}
+A (Final): {new_A}{progress_A}
+B (Filing): {new_B}{progress_B}
 """
 
     requests.post(NTFY, data=message.encode("utf-8"))
