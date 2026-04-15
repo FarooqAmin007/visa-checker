@@ -76,7 +76,7 @@ progress_B = calc_progress(parse_date(old_B), parse_date(new_B))
 
 new_data = f"{title}|{new_A}|{new_B}"
 
-if new_data != "|".join(old):
+if True:
 
     message = f"""📢 {title}
 
