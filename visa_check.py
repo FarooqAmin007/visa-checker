@@ -7,16 +7,21 @@ MAIN_URL = "https://travel.state.gov/content/travel/en/legal/visa-law0/visa-bull
 BASE_URL = "https://travel.state.gov"
 NTFY = "https://ntfy.sh/visa-bulletin-rauf"
 
+# 🔥 FIXED DATE PARSER
 def parse_date(d):
     try:
-        return datetime.strptime(d.strip(), "%d%b%Y")
+        d = d.strip().upper().replace(" ", "")
+        if len(d) == 7:  # handle 01JAN08
+            d = d[:5] + "20" + d[5:]
+        return datetime.strptime(d, "%d%b%Y")
     except:
         return None
 
+# 🔥 PROGRESS CALCULATION
 def calc_progress(old, new):
     if old is None or new is None:
         return ""
-    
+
     months = (new.year - old.year) * 12 + (new.month - old.month)
 
     if months > 0:
@@ -58,14 +63,15 @@ def get_f4_data(url):
 
     return final_action, filing_date
 
-# main
+# ================= MAIN =================
+
 title, link = get_latest_link()
 
 if not title:
     print("Error")
     exit()
 
-# read old
+# read old data
 if os.path.exists("last.txt"):
     with open("last.txt", "r") as f:
         old = f.read().split("|")
@@ -76,25 +82,29 @@ old_title, old_A, old_B = old
 
 new_A, new_B = get_f4_data(link)
 
+# 🔍 DEBUG PRINTS (IMPORTANT)
+print("OLD A:", old_A)
+print("NEW A:", new_A)
+print("PARSED OLD:", parse_date(old_A))
+print("PARSED NEW:", parse_date(new_A))
+
+# calculate progress
 progress_A = calc_progress(parse_date(old_A), parse_date(new_A))
 progress_B = calc_progress(parse_date(old_B), parse_date(new_B))
 
-new_data = f"{title}|{new_A}|{new_B}"
-
-if True:
-
-    message = f"""📢 {title}
+# force test notification
+message = f"""📢 {title}
 
 F4 Category:
 A (Final): {new_A}{progress_A}
 B (Filing): {new_B}{progress_B}
 """
 
-    requests.post(NTFY, data=message.encode("utf-8"))
+requests.post(NTFY, data=message.encode("utf-8"))
 
-    with open("last.txt", "w") as f:
-        f.write(new_data)
+# save new data
+new_data = f"{title}|{new_A}|{new_B}"
+with open("last.txt", "w") as f:
+    f.write(new_data)
 
-    print("Notification sent")
-else:
-    print("No change")
+print("Notification sent")
