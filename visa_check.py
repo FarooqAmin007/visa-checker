@@ -9,17 +9,22 @@ NTFY = "https://ntfy.sh/visa-bulletin-rauf"
 
 def parse_date(d):
     try:
-        return datetime.strptime(d, "%d%b%Y")
+        return datetime.strptime(d.strip(), "%d%b%Y")
     except:
         return None
 
 def calc_progress(old, new):
-    if not old or not new:
+    if old is None or new is None:
         return ""
-    diff = (new.year - old.year) * 12 + (new.month - old.month)
-    if diff > 0:
-        return f" (+{diff} months)"
-    return " (no change)"
+    
+    months = (new.year - old.year) * 12 + (new.month - old.month)
+
+    if months > 0:
+        return f" (+{months} months)"
+    elif months == 0:
+        return " (no change)"
+    else:
+        return ""
 
 def get_latest_link():
     res = requests.get(MAIN_URL)
