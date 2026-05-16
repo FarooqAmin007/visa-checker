@@ -17,7 +17,7 @@ YOUR_PD = datetime.strptime("04FEB2011", "%d%b%Y")
 # ================= TWILIO =================
 
 ACCOUNT_SID = os.getenv("AC68d759fc460bde134dc1536eba538b58")
-AUTH_TOKEN = os.getenv("e8c9b4f0750fe093a217eb471ccb86c9")
+AUTH_TOKEN = os.getenv("840a1107e1638a84dcb817c22ab41867")
 
 TWILIO_WHATSAPP = "whatsapp:+14155238886"
 YOUR_WHATSAPP = "whatsapp:+923346237925"
