@@ -30,16 +30,18 @@ def send_whatsapp(msg):
 
     try:
 
-        client.messages.create(
+        message = client.messages.create(
             from_=TWILIO_WHATSAPP,
             body=msg,
             to=YOUR_WHATSAPP
         )
 
-        print("WhatsApp notification sent")
+        print("WhatsApp sent:", message.sid)
 
     except Exception as e:
-        print("WhatsApp failed:", e)
+
+        print("WhatsApp failed:")
+        print(str(e))
 
 
 def parse_date(d):
