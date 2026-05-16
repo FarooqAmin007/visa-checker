@@ -2,50 +2,104 @@ import requests
 from bs4 import BeautifulSoup
 import os
 from datetime import datetime
+from twilio.rest import Client
+
+# ================= CONFIG =================
 
 MAIN_URL = "https://travel.state.gov/content/travel/en/legal/visa-law0/visa-bulletin.html"
 BASE_URL = "https://travel.state.gov"
+
 NTFY = "https://ntfy.sh/visa-bulletin-rauf"
 
 # 🎯 YOUR PRIORITY DATE
 YOUR_PD = datetime.strptime("04FEB2011", "%d%b%Y")
 
+# ================= TWILIO =================
+
+ACCOUNT_SID = os.getenv("AC68d759fc460bde134dc1536eba538b58")
+AUTH_TOKEN = os.getenv("e8c9b4f0750fe093a217eb471ccb86c9")
+
+TWILIO_WHATSAPP = "whatsapp:+14155238886"
+YOUR_WHATSAPP = "whatsapp:+923346237925"
+
+client = Client(ACCOUNT_SID, AUTH_TOKEN)
+
+# ================= FUNCTIONS =================
+
+def send_whatsapp(msg):
+
+    try:
+
+        client.messages.create(
+            from_=TWILIO_WHATSAPP,
+            body=msg,
+            to=YOUR_WHATSAPP
+        )
+
+        print("WhatsApp notification sent")
+
+    except Exception as e:
+        print("WhatsApp failed:", e)
+
+
 def parse_date(d):
+
     try:
         d = d.strip().upper().replace(" ", "")
+
         if len(d) == 7:
             d = d[:5] + "20" + d[5:]
+
         return datetime.strptime(d, "%d%b%Y")
+
     except:
         return None
 
+
 def calc_progress(old, new):
+
     if old is None or new is None:
         return ""
+
     months = (new.year - old.year) * 12 + (new.month - old.month)
+
     if months > 0:
         return f" (+{months} months)"
+
     elif months == 0:
         return " (no change)"
+
     return ""
 
+
 def months_remaining(current, target):
+
     if not current or not target:
         return None
+
     return (target.year - current.year) * 12 + (target.month - current.month)
 
+
 def get_latest_link():
+
     res = requests.get(MAIN_URL)
+
     soup = BeautifulSoup(res.text, "html.parser")
 
     for a in soup.find_all("a"):
+
         text = a.get_text(strip=True)
+
         if "Visa Bulletin For" in text:
             return text, BASE_URL + a.get("href")
+
     return None, None
 
+
 def get_f4_data(url):
+
     res = requests.get(url)
+
     soup = BeautifulSoup(res.text, "html.parser")
 
     tables = soup.find_all("table")
@@ -54,17 +108,23 @@ def get_f4_data(url):
     filing_date = "Not found"
 
     for table in tables:
+
         rows = table.find_all("tr")
+
         for row in rows:
+
             cols = [c.get_text(strip=True) for c in row.find_all("td")]
 
             if len(cols) > 1 and "F4" in cols[0]:
+
                 if final_action == "Not found":
                     final_action = cols[1]
+
                 else:
                     filing_date = cols[1]
 
     return final_action, filing_date
+
 
 # ================= MAIN =================
 
@@ -74,8 +134,10 @@ if not title:
     exit()
 
 if os.path.exists("last.txt"):
+
     with open("last.txt", "r") as f:
         old = f.read().split("|")
+
 else:
     old = ["", "", ""]
 
@@ -97,23 +159,30 @@ remaining_B = months_remaining(new_B_date, YOUR_PD)
 
 alerts = ""
 
-# 🎯 ALERT LOGIC
+# ================= ALERTS =================
 
 if remaining_A is not None:
+
     if remaining_A <= 0:
         alerts += "\n🎉 YOU ARE CURRENT (Final Action)"
+
     elif remaining_A <= 12:
         alerts += f"\n🎯 Very close (~{remaining_A} months left)"
 
+
 if remaining_B is not None:
+
     if remaining_B <= 0:
         alerts += "\n🟡 Filing Date reached → Prepare documents NOW"
+
     elif remaining_B <= 12:
         alerts += f"\n📂 Prepare documents soon (~{remaining_B} months)"
 
+
 new_data = f"{title}|{new_A}|{new_B}"
 
-# only notify on change
+# ================= NOTIFY =================
+
 if new_data != "|".join(old):
 
     message = f"""📢 {title}
@@ -128,11 +197,17 @@ B (Filing): {new_B}{progress_B}
 {alerts}
 """
 
+    # ntfy
     requests.post(NTFY, data=message.encode("utf-8"))
 
+    # WhatsApp
+    send_whatsapp(message)
+
+    # save latest data
     with open("last.txt", "w") as f:
         f.write(new_data)
 
-    print("Notification sent")
+    print("Notifications sent")
+
 else:
     print("No change")
