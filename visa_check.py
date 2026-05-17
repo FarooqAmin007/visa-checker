@@ -2,7 +2,15 @@ import requests
 from bs4 import BeautifulSoup
 import os
 from datetime import datetime
-from twilio.rest import Client
+import smtplib
+
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
 
 # ================= CONFIG =================
 
@@ -11,42 +19,105 @@ BASE_URL = "https://travel.state.gov"
 
 NTFY = "https://ntfy.sh/visa-bulletin-rauf"
 
-# 🎯 YOUR PRIORITY DATE
 YOUR_PD = datetime.strptime("04FEB2011", "%d%b%Y")
 
-# ================= TWILIO =================
+# ================= EMAIL =================
 
-ACCOUNT_SID = os.getenv("TWILIO_SID")
-AUTH_TOKEN = os.getenv("TWILIO_TOKEN")
+EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 
-TWILIO_WHATSAPP = "whatsapp:+14155238886"
-YOUR_WHATSAPP = "whatsapp:+923346237925"
-
-client = Client(ACCOUNT_SID, AUTH_TOKEN)
+TO_EMAIL = "raufamin7871@gmail.com"
 
 # ================= FUNCTIONS =================
 
-def send_whatsapp(msg):
+def create_pdf():
+
+    pdf_file = "F4_Checklist.pdf"
+
+    doc = SimpleDocTemplate(pdf_file)
+
+    styles = getSampleStyleSheet()
+
+    story = []
+
+    title = Paragraph("<b>F4 Visa Document Checklist</b>", styles['Title'])
+
+    story.append(title)
+
+    story.append(Spacer(1, 12))
+
+    checklist = """
+    <br/>
+    • Passport copies<br/>
+    • Birth certificates<br/>
+    • Marriage certificate<br/>
+    • Police certificates<br/>
+    • Passport size photographs<br/>
+    • Affidavit of Support (I-864)<br/>
+    • Tax returns of petitioner<br/>
+    • DS-260 confirmation page<br/>
+    • NVC fee payment receipts<br/>
+    • Interview appointment letter<br/>
+    • Vaccination records<br/>
+    • Civil documents translations (if needed)<br/>
+    """
+
+    story.append(Paragraph(checklist, styles['BodyText']))
+
+    doc.build(story)
+
+    return pdf_file
+
+
+def send_email(subject, body, attachment_path):
 
     try:
 
-        message = client.messages.create(
-            from_=TWILIO_WHATSAPP,
-            body=msg,
-            to=YOUR_WHATSAPP
-        )
+        msg = MIMEMultipart()
 
-        print("WhatsApp sent:", message.sid)
+        msg["From"] = EMAIL_ADDRESS
+        msg["To"] = TO_EMAIL
+        msg["Subject"] = subject
+
+        msg.attach(MIMEText(body, "plain"))
+
+        with open(attachment_path, "rb") as attachment:
+
+            part = MIMEBase("application", "octet-stream")
+
+            part.set_payload(attachment.read())
+
+            encoders.encode_base64(part)
+
+            part.add_header(
+                "Content-Disposition",
+                f"attachment; filename={attachment_path}",
+            )
+
+            msg.attach(part)
+
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+
+        server.starttls()
+
+        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+
+        server.send_message(msg)
+
+        server.quit()
+
+        print("Email sent successfully")
 
     except Exception as e:
 
-        print("WhatsApp failed:")
+        print("Email failed:")
         print(str(e))
 
 
 def parse_date(d):
 
     try:
+
         d = d.strip().upper().replace(" ", "")
 
         if len(d) == 7:
@@ -55,6 +126,7 @@ def parse_date(d):
         return datetime.strptime(d, "%d%b%Y")
 
     except:
+
         return None
 
 
@@ -93,6 +165,7 @@ def get_latest_link():
         text = a.get_text(strip=True)
 
         if "Visa Bulletin For" in text:
+
             return text, BASE_URL + a.get("href")
 
     return None, None
@@ -138,9 +211,11 @@ if not title:
 if os.path.exists("last.txt"):
 
     with open("last.txt", "r") as f:
+
         old = f.read().split("|")
 
 else:
+
     old = ["", "", ""]
 
 old_title, old_A, old_B = old
@@ -166,18 +241,22 @@ alerts = ""
 if remaining_A is not None:
 
     if remaining_A <= 0:
+
         alerts += "\n🎉 YOU ARE CURRENT (Final Action)"
 
     elif remaining_A <= 12:
+
         alerts += f"\n🎯 Very close (~{remaining_A} months left)"
 
 
 if remaining_B is not None:
 
     if remaining_B <= 0:
+
         alerts += "\n🟡 Filing Date reached → Prepare documents NOW"
 
     elif remaining_B <= 12:
+
         alerts += f"\n📂 Prepare documents soon (~{remaining_B} months)"
 
 
@@ -194,22 +273,33 @@ A (Final): {new_A}{progress_A}
 B (Filing): {new_B}{progress_B}
 
 📊 Your PD: 04FEB2011
+
 ⏳ Remaining (A): {remaining_A} months
 ⏳ Remaining (B): {remaining_B} months
+
 {alerts}
 """
 
-    # ntfy
+    # ntfy notification
     requests.post(NTFY, data=message.encode("utf-8"))
 
-    # WhatsApp
-    send_whatsapp(message)
+    # create checklist pdf
+    pdf_file = create_pdf()
+
+    # send email
+    send_email(
+        subject=title,
+        body=message,
+        attachment_path=pdf_file
+    )
 
     # save latest data
     with open("last.txt", "w") as f:
+
         f.write(new_data)
 
     print("Notifications sent")
 
 else:
+
     print("No change")
