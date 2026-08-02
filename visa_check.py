@@ -1,6 +1,8 @@
 import requests
 from bs4 import BeautifulSoup
 import os
+import sys
+import time
 from datetime import datetime
 import smtplib
 
@@ -12,6 +14,8 @@ from email import encoders
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 
+from playwright.sync_api import sync_playwright
+
 # ================= CONFIG =================
 
 MAIN_URL = "https://travel.state.gov/content/travel/en/legal/visa-law0/visa-bulletin.html"
@@ -20,6 +24,11 @@ BASE_URL = "https://travel.state.gov"
 NTFY = "https://ntfy.sh/visa-bulletin-rauf"
 
 YOUR_PD = datetime.strptime("04FEB2011", "%d%b%Y")
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
 
 # ================= EMAIL =================
 
@@ -114,6 +123,13 @@ def send_email(subject, body, attachment_path):
         print(str(e))
 
 
+def notify_ntfy(text):
+    try:
+        requests.post(NTFY, data=text.encode("utf-8"), timeout=15)
+    except Exception as e:
+        print("ntfy failed:", e)
+
+
 def parse_date(d):
 
     try:
@@ -154,11 +170,53 @@ def months_remaining(current, target):
     return (target.year - current.year) * 12 + (target.month - current.month)
 
 
-def get_latest_link():
+def looks_like_challenge(html: str) -> bool:
+    """Detect the 'Performing security verification' bot-check interstitial."""
+    if not html:
+        return True
+    lowered = html.lower()
+    markers = [
+        "performing security verification",
+        "verifies you are not a bot",
+        "security service to protect against malicious bots",
+    ]
+    return any(m in lowered for m in markers)
 
-    res = requests.get(MAIN_URL)
 
-    soup = BeautifulSoup(res.text, "html.parser")
+def fetch_rendered_html(url: str, page, max_attempts: int = 3) -> str:
+    """
+    Load a URL in the shared Playwright page and wait out the bot-check
+    challenge if one appears. Returns the final rendered HTML.
+    """
+    last_html = ""
+
+    for attempt in range(1, max_attempts + 1):
+
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+
+        # Give the challenge JS a chance to run and redirect/replace content.
+        for _ in range(6):
+            html = page.content()
+            if not looks_like_challenge(html):
+                return html
+            page.wait_for_timeout(5000)
+
+        last_html = page.content()
+        print(f"Attempt {attempt}: still on security-verification page, retrying...")
+        page.wait_for_timeout(3000)
+
+    return last_html
+
+
+def get_latest_link(page):
+
+    html = fetch_rendered_html(MAIN_URL, page)
+
+    if looks_like_challenge(html):
+        print("Blocked by bot-check on main bulletin index page.")
+        return None, None
+
+    soup = BeautifulSoup(html, "html.parser")
 
     for a in soup.find_all("a"):
 
@@ -166,16 +224,26 @@ def get_latest_link():
 
         if "Visa Bulletin For" in text:
 
-            return text, BASE_URL + a.get("href")
+            href = a.get("href")
+            if href and href.startswith("http"):
+                full_url = href
+            else:
+                full_url = BASE_URL + href
+
+            return text, full_url
 
     return None, None
 
 
-def get_f4_data(url):
+def get_f4_data(url, page):
 
-    res = requests.get(url)
+    html = fetch_rendered_html(url, page)
 
-    soup = BeautifulSoup(res.text, "html.parser")
+    if looks_like_challenge(html):
+        print("Blocked by bot-check on bulletin detail page.")
+        return "Not found", "Not found"
+
+    soup = BeautifulSoup(html, "html.parser")
 
     tables = soup.find_all("table")
 
@@ -203,24 +271,53 @@ def get_f4_data(url):
 
 # ================= MAIN =================
 
-title, link = get_latest_link()
+with sync_playwright() as p:
 
-if not title:
-    exit()
+    browser = p.chromium.launch(headless=True)
 
-if os.path.exists("last.txt"):
+    context = browser.new_context(
+        user_agent=USER_AGENT,
+        viewport={"width": 1366, "height": 900},
+        locale="en-US",
+        extra_http_headers={
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+    )
 
-    with open("last.txt", "r") as f:
+    page = context.new_page()
 
-        old = f.read().split("|")
+    title, link = get_latest_link(page)
 
-else:
+    if not title:
+        browser.close()
+        # Site is still blocking us even after rendering - alert once via ntfy
+        # so it's obvious this needs a manual look, then exit without touching
+        # last.txt (so we retry cleanly next run).
+        notify_ntfy(
+            "⚠️ Visa bulletin checker: could not get past travel.state.gov "
+            "bot-check after retries. Site structure or protection may have "
+            "changed further."
+        )
+        sys.exit(0)
 
-    old = ["", "", ""]
+    if os.path.exists("last.txt"):
 
-old_title, old_A, old_B = old
+        with open("last.txt", "r") as f:
 
-new_A, new_B = get_f4_data(link)
+            old = f.read().strip().split("|")
+
+    else:
+
+        old = ["", "", ""]
+
+    while len(old) < 3:
+        old.append("")
+
+    old_title, old_A, old_B = old[0], old[1], old[2]
+
+    new_A, new_B = get_f4_data(link, page)
+
+    browser.close()
 
 old_A_date = parse_date(old_A)
 old_B_date = parse_date(old_B)
@@ -281,7 +378,7 @@ B (Filing): {new_B}{progress_B}
 """
 
     # ntfy notification
-    requests.post(NTFY, data=message.encode("utf-8"))
+    notify_ntfy(message)
 
     # create checklist pdf
     pdf_file = create_pdf()
