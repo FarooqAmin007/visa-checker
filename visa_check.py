@@ -1,8 +1,7 @@
 import requests
-from bs4 import BeautifulSoup
+import re
 import os
 import sys
-import time
 from datetime import datetime
 import smtplib
 
@@ -14,12 +13,13 @@ from email import encoders
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 
-from playwright.sync_api import sync_playwright
+import pdfplumber
+import io
 
 # ================= CONFIG =================
 
-MAIN_URL = "https://travel.state.gov/content/travel/en/legal/visa-law0/visa-bulletin.html"
 BASE_URL = "https://travel.state.gov"
+PDF_URL_TEMPLATE = BASE_URL + "/content/dam/visas/Bulletins/visabulletin_{month}{year}.pdf"
 
 NTFY = "https://ntfy.sh/visa-bulletin-rauf"
 
@@ -29,6 +29,13 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
+
+HEADERS = {"User-Agent": USER_AGENT}
+
+MONTH_NAMES = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
 
 # ================= EMAIL =================
 
@@ -40,21 +47,13 @@ TO_EMAIL = "raufamin7871@gmail.com"
 # ================= FUNCTIONS =================
 
 def create_pdf():
-
     pdf_file = "F4_Checklist.pdf"
-
     doc = SimpleDocTemplate(pdf_file)
-
     styles = getSampleStyleSheet()
-
     story = []
-
     title = Paragraph("<b>F4 Visa Document Checklist</b>", styles['Title'])
-
     story.append(title)
-
     story.append(Spacer(1, 12))
-
     checklist = """
     <br/>
     • Passport copies<br/>
@@ -70,55 +69,36 @@ def create_pdf():
     • Vaccination records<br/>
     • Civil documents translations (if needed)<br/>
     """
-
     story.append(Paragraph(checklist, styles['BodyText']))
-
     doc.build(story)
-
     return pdf_file
 
 
 def send_email(subject, body, attachment_path):
-
     try:
-
         msg = MIMEMultipart()
-
         msg["From"] = EMAIL_ADDRESS
         msg["To"] = TO_EMAIL
         msg["Subject"] = subject
-
         msg.attach(MIMEText(body, "plain"))
 
         with open(attachment_path, "rb") as attachment:
-
             part = MIMEBase("application", "octet-stream")
-
             part.set_payload(attachment.read())
-
             encoders.encode_base64(part)
-
             part.add_header(
                 "Content-Disposition",
                 f"attachment; filename={attachment_path}",
             )
-
             msg.attach(part)
 
         server = smtplib.SMTP("smtp.gmail.com", 587)
-
         server.starttls()
-
         server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-
         server.send_message(msg)
-
         server.quit()
-
         print("Email sent successfully")
-
     except Exception as e:
-
         print("Email failed:")
         print(str(e))
 
@@ -131,193 +111,140 @@ def notify_ntfy(text):
 
 
 def parse_date(d):
-
     try:
-
         d = d.strip().upper().replace(" ", "")
-
         if len(d) == 7:
             d = d[:5] + "20" + d[5:]
-
         return datetime.strptime(d, "%d%b%Y")
-
     except:
-
         return None
 
 
 def calc_progress(old, new):
-
     if old is None or new is None:
         return ""
-
     months = (new.year - old.year) * 12 + (new.month - old.month)
-
     if months > 0:
         return f" (+{months} months)"
-
     elif months == 0:
         return " (no change)"
-
     return ""
 
 
 def months_remaining(current, target):
-
     if not current or not target:
         return None
-
     return (target.year - current.year) * 12 + (target.month - current.month)
 
 
-def looks_like_challenge(html: str) -> bool:
-    """Detect the 'Performing security verification' bot-check interstitial."""
-    if not html:
-        return True
-    lowered = html.lower()
-    markers = [
-        "performing security verification",
-        "verifies you are not a bot",
-        "security service to protect against malicious bots",
-    ]
-    return any(m in lowered for m in markers)
+def add_months(base_year, base_month_index, offset):
+    """base_month_index is 0-based (0=January)."""
+    total = base_month_index + offset
+    year = base_year + total // 12
+    month_index = total % 12
+    return year, month_index
 
 
-def fetch_rendered_html(url: str, page, max_attempts: int = 3) -> str:
+def find_latest_bulletin_pdf():
     """
-    Load a URL in the shared Playwright page and wait out the bot-check
-    challenge if one appears. Returns the final rendered HTML.
+    The Visa Bulletin PDF URL is predictable: visabulletin_<Month><Year>.pdf.
+    A new bulletin usually goes up shortly before the month it covers starts,
+    so we probe a small window around today and take the furthest-future
+    one that actually exists.
     """
-    last_html = ""
+    today = datetime.utcnow()
+    base_month_index = today.month - 1
 
-    for attempt in range(1, max_attempts + 1):
+    # Check next month first (already published near month end), then
+    # current month, then fall back a month or two if needed.
+    for offset in [2, 1, 0, -1, -2]:
+        year, month_index = add_months(today.year, base_month_index, offset)
+        month_name = MONTH_NAMES[month_index]
+        url = PDF_URL_TEMPLATE.format(month=month_name, year=year)
 
-        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=30)
+        except Exception as e:
+            print(f"Request failed for {url}: {e}")
+            continue
 
-        # Give the challenge JS a chance to run and redirect/replace content.
-        for _ in range(6):
-            html = page.content()
-            if not looks_like_challenge(html):
-                return html
-            page.wait_for_timeout(5000)
+        if resp.status_code == 200 and resp.headers.get("Content-Type", "").lower().startswith("application/pdf"):
+            title = f"Visa Bulletin For {month_name} {year}"
+            print(f"Found bulletin: {title} -> {url}")
+            return title, resp.content
 
-        last_html = page.content()
-        print(f"Attempt {attempt}: still on security-verification page, retrying...")
-        page.wait_for_timeout(3000)
-
-    return last_html
-
-
-def get_latest_link(page):
-
-    html = fetch_rendered_html(MAIN_URL, page)
-
-    if looks_like_challenge(html):
-        print("Blocked by bot-check on main bulletin index page.")
-        return None, None
-
-    soup = BeautifulSoup(html, "html.parser")
-
-    for a in soup.find_all("a"):
-
-        text = a.get_text(strip=True)
-
-        if "Visa Bulletin For" in text:
-
-            href = a.get("href")
-            if href and href.startswith("http"):
-                full_url = href
-            else:
-                full_url = BASE_URL + href
-
-            return text, full_url
+        print(f"Not available yet: {url} (status {resp.status_code})")
 
     return None, None
 
 
-def get_f4_data(url, page):
+F4_ROW_RE = re.compile(
+    r"F4\s+"
+    r"((?:\d{2}[A-Z]{3}\d{2}|C|U))\s+"
+    r"((?:\d{2}[A-Z]{3}\d{2}|C|U))\s+"
+    r"((?:\d{2}[A-Z]{3}\d{2}|C|U))\s+"
+    r"((?:\d{2}[A-Z]{3}\d{2}|C|U))\s+"
+    r"((?:\d{2}[A-Z]{3}\d{2}|C|U))"
+)
 
-    html = fetch_rendered_html(url, page)
 
-    if looks_like_challenge(html):
-        print("Blocked by bot-check on bulletin detail page.")
-        return "Not found", "Not found"
+def get_f4_data(pdf_bytes):
+    """
+    Extract F4 (Brothers/Sisters of Adult US Citizens) rows.
+    The PDF has two F4 rows in this order: Final Action Dates, then
+    Dates for Filing. We take the "All Chargeability Areas" column
+    (the first value after F4) from each.
+    """
+    text_parts = []
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text() or ""
+            text_parts.append(page_text)
 
-    soup = BeautifulSoup(html, "html.parser")
+    full_text = "\n".join(text_parts)
+    # Collapse whitespace/newlines so the regex can match rows that PDF
+    # extraction may have wrapped oddly.
+    flat_text = re.sub(r"\s+", " ", full_text)
 
-    tables = soup.find_all("table")
+    matches = F4_ROW_RE.findall(flat_text)
 
-    final_action = "Not found"
-    filing_date = "Not found"
-
-    for table in tables:
-
-        rows = table.find_all("tr")
-
-        for row in rows:
-
-            cols = [c.get_text(strip=True) for c in row.find_all("td")]
-
-            if len(cols) > 1 and "F4" in cols[0]:
-
-                if final_action == "Not found":
-                    final_action = cols[1]
-
-                else:
-                    filing_date = cols[1]
+    final_action = matches[0][0] if len(matches) >= 1 else "Not found"
+    filing_date = matches[1][0] if len(matches) >= 2 else "Not found"
 
     return final_action, filing_date
 
 
 # ================= MAIN =================
 
-with sync_playwright() as p:
+title, pdf_bytes = find_latest_bulletin_pdf()
 
-    browser = p.chromium.launch(headless=True)
-
-    context = browser.new_context(
-        user_agent=USER_AGENT,
-        viewport={"width": 1366, "height": 900},
-        locale="en-US",
-        extra_http_headers={
-            "Accept-Language": "en-US,en;q=0.9",
-        },
+if not title:
+    notify_ntfy(
+        "⚠️ Visa bulletin checker: could not find a current bulletin PDF "
+        "at travel.state.gov. URL pattern or publishing schedule may have "
+        "changed."
     )
+    sys.exit(0)
 
-    page = context.new_page()
+if os.path.exists("last.txt"):
+    with open("last.txt", "r") as f:
+        old = f.read().strip().split("|")
+else:
+    old = ["", "", ""]
 
-    title, link = get_latest_link(page)
+while len(old) < 3:
+    old.append("")
 
-    if not title:
-        browser.close()
-        # Site is still blocking us even after rendering - alert once via ntfy
-        # so it's obvious this needs a manual look, then exit without touching
-        # last.txt (so we retry cleanly next run).
-        notify_ntfy(
-            "⚠️ Visa bulletin checker: could not get past travel.state.gov "
-            "bot-check after retries. Site structure or protection may have "
-            "changed further."
-        )
-        sys.exit(0)
+old_title, old_A, old_B = old[0], old[1], old[2]
 
-    if os.path.exists("last.txt"):
+new_A, new_B = get_f4_data(pdf_bytes)
 
-        with open("last.txt", "r") as f:
-
-            old = f.read().strip().split("|")
-
-    else:
-
-        old = ["", "", ""]
-
-    while len(old) < 3:
-        old.append("")
-
-    old_title, old_A, old_B = old[0], old[1], old[2]
-
-    new_A, new_B = get_f4_data(link, page)
-
-    browser.close()
+if new_A == "Not found" and new_B == "Not found":
+    notify_ntfy(
+        f"⚠️ Visa bulletin checker: found {title} but could not parse the "
+        "F4 rows. PDF layout may have changed."
+    )
+    sys.exit(0)
 
 old_A_date = parse_date(old_A)
 old_B_date = parse_date(old_B)
@@ -333,36 +260,21 @@ remaining_B = months_remaining(new_B_date, YOUR_PD)
 
 alerts = ""
 
-# ================= ALERTS =================
-
 if remaining_A is not None:
-
     if remaining_A <= 0:
-
         alerts += "\n🎉 YOU ARE CURRENT (Final Action)"
-
     elif remaining_A <= 12:
-
         alerts += f"\n🎯 Very close (~{remaining_A} months left)"
 
-
 if remaining_B is not None:
-
     if remaining_B <= 0:
-
         alerts += "\n🟡 Filing Date reached → Prepare documents NOW"
-
     elif remaining_B <= 12:
-
         alerts += f"\n📂 Prepare documents soon (~{remaining_B} months)"
-
 
 new_data = f"{title}|{new_A}|{new_B}"
 
-# ================= NOTIFY =================
-
 if new_data != "|".join(old):
-
     message = f"""📢 {title}
 
 F4 Category:
@@ -377,26 +289,20 @@ B (Filing): {new_B}{progress_B}
 {alerts}
 """
 
-    # ntfy notification
     notify_ntfy(message)
 
-    # create checklist pdf
     pdf_file = create_pdf()
 
-    # send email
     send_email(
         subject=title,
         body=message,
         attachment_path=pdf_file
     )
 
-    # save latest data
     with open("last.txt", "w") as f:
-
         f.write(new_data)
 
     print("Notifications sent")
 
 else:
-
     print("No change")
