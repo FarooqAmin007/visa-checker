@@ -155,7 +155,12 @@ def looks_like_challenge(html: str) -> bool:
 def get_latest_link(base_url):
     """Return (title, full_url) of the newest 'Visa Bulletin For ...' page."""
     url = base_url + MAIN_PATH
-    resp = requests.get(url, headers=HEADERS, timeout=30)
+
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=30)
+    except requests.RequestException as e:
+        print(f"Request error fetching {url}: {e}")
+        return None, None
 
     if resp.status_code != 200 or looks_like_challenge(resp.text):
         return None, None
@@ -175,7 +180,11 @@ def get_latest_link(base_url):
 
 
 def get_f4_data(url):
-    resp = requests.get(url, headers=HEADERS, timeout=30)
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=30)
+    except requests.RequestException as e:
+        print(f"Request error fetching {url}: {e}")
+        return "Not found", "Not found"
 
     if resp.status_code != 200 or looks_like_challenge(resp.text):
         return "Not found", "Not found"
@@ -223,7 +232,12 @@ def fetch_bulletin():
 
 # ================= MAIN =================
 
-title, new_A, new_B = fetch_bulletin()
+try:
+    title, new_A, new_B = fetch_bulletin()
+except Exception as e:
+    print(f"Unexpected error in fetch_bulletin: {e}")
+    notify_ntfy(f"⚠️ Visa bulletin checker crashed unexpectedly: {e}")
+    sys.exit(0)
 
 if not title:
     notify_ntfy(
