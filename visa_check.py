@@ -1,5 +1,5 @@
 import requests
-import re
+from bs4 import BeautifulSoup
 import os
 import sys
 from datetime import datetime
@@ -13,13 +13,20 @@ from email import encoders
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 
-import pdfplumber
-import io
-
 # ================= CONFIG =================
 
-BASE_URL = "https://travel.state.gov"
-PDF_URL_TEMPLATE = BASE_URL + "/content/dam/visas/Bulletins/visabulletin_{month}{year}.pdf"
+# travel.state.gov now sits behind a bot-check that blocks scripted
+# requests (and even headless browsers). The State Department also
+# mirrors the exact same content tree, unprotected, at adoptions.state.gov
+# (note the extra "s") - verified to have identical Visa Bulletin pages.
+# We try that mirror first, then fall back to the real domain in case
+# the mirror ever goes away or the block on the main site is lifted.
+CANDIDATE_BASES = [
+    "https://adoptions.state.gov",
+    "https://travel.state.gov",
+]
+
+MAIN_PATH = "/content/travel/en/legal/visa-law0/visa-bulletin.html"
 
 NTFY = "https://ntfy.sh/visa-bulletin-rauf"
 
@@ -31,11 +38,6 @@ USER_AGENT = (
 )
 
 HEADERS = {"User-Agent": USER_AGENT}
-
-MONTH_NAMES = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
-]
 
 # ================= EMAIL =================
 
@@ -137,92 +139,97 @@ def months_remaining(current, target):
     return (target.year - current.year) * 12 + (target.month - current.month)
 
 
-def add_months(base_year, base_month_index, offset):
-    """base_month_index is 0-based (0=January)."""
-    total = base_month_index + offset
-    year = base_year + total // 12
-    month_index = total % 12
-    return year, month_index
+def looks_like_challenge(html: str) -> bool:
+    """Detect a 'Performing security verification' style bot-check page."""
+    if not html:
+        return True
+    lowered = html.lower()
+    markers = [
+        "performing security verification",
+        "verifies you are not a bot",
+        "security service to protect against malicious bots",
+    ]
+    return any(m in lowered for m in markers)
 
 
-def find_latest_bulletin_pdf():
-    """
-    The Visa Bulletin PDF URL is predictable: visabulletin_<Month><Year>.pdf.
-    A new bulletin usually goes up shortly before the month it covers starts,
-    so we probe a small window around today and take the furthest-future
-    one that actually exists.
-    """
-    today = datetime.utcnow()
-    base_month_index = today.month - 1
+def get_latest_link(base_url):
+    """Return (title, full_url) of the newest 'Visa Bulletin For ...' page."""
+    url = base_url + MAIN_PATH
+    resp = requests.get(url, headers=HEADERS, timeout=30)
 
-    # Check next month first (already published near month end), then
-    # current month, then fall back a month or two if needed.
-    for offset in [2, 1, 0, -1, -2]:
-        year, month_index = add_months(today.year, base_month_index, offset)
-        month_name = MONTH_NAMES[month_index]
-        url = PDF_URL_TEMPLATE.format(month=month_name, year=year)
+    if resp.status_code != 200 or looks_like_challenge(resp.text):
+        return None, None
 
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=30)
-        except Exception as e:
-            print(f"Request failed for {url}: {e}")
-            continue
+    soup = BeautifulSoup(resp.text, "html.parser")
 
-        if resp.status_code == 200 and resp.headers.get("Content-Type", "").lower().startswith("application/pdf"):
-            title = f"Visa Bulletin For {month_name} {year}"
-            print(f"Found bulletin: {title} -> {url}")
-            return title, resp.content
-
-        print(f"Not available yet: {url} (status {resp.status_code})")
+    for a in soup.find_all("a"):
+        text = a.get_text(strip=True)
+        if "Visa Bulletin For" in text:
+            href = a.get("href")
+            if not href:
+                continue
+            full_url = href if href.startswith("http") else base_url + href
+            return text, full_url
 
     return None, None
 
 
-F4_ROW_RE = re.compile(
-    r"F4\s+"
-    r"((?:\d{2}[A-Z]{3}\d{2}|C|U))\s+"
-    r"((?:\d{2}[A-Z]{3}\d{2}|C|U))\s+"
-    r"((?:\d{2}[A-Z]{3}\d{2}|C|U))\s+"
-    r"((?:\d{2}[A-Z]{3}\d{2}|C|U))\s+"
-    r"((?:\d{2}[A-Z]{3}\d{2}|C|U))"
-)
+def get_f4_data(url):
+    resp = requests.get(url, headers=HEADERS, timeout=30)
 
+    if resp.status_code != 200 or looks_like_challenge(resp.text):
+        return "Not found", "Not found"
 
-def get_f4_data(pdf_bytes):
-    """
-    Extract F4 (Brothers/Sisters of Adult US Citizens) rows.
-    The PDF has two F4 rows in this order: Final Action Dates, then
-    Dates for Filing. We take the "All Chargeability Areas" column
-    (the first value after F4) from each.
-    """
-    text_parts = []
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for page in pdf.pages:
-            page_text = page.extract_text() or ""
-            text_parts.append(page_text)
+    soup = BeautifulSoup(resp.text, "html.parser")
+    tables = soup.find_all("table")
 
-    full_text = "\n".join(text_parts)
-    # Collapse whitespace/newlines so the regex can match rows that PDF
-    # extraction may have wrapped oddly.
-    flat_text = re.sub(r"\s+", " ", full_text)
+    final_action = "Not found"
+    filing_date = "Not found"
 
-    matches = F4_ROW_RE.findall(flat_text)
-
-    final_action = matches[0][0] if len(matches) >= 1 else "Not found"
-    filing_date = matches[1][0] if len(matches) >= 2 else "Not found"
+    for table in tables:
+        rows = table.find_all("tr")
+        for row in rows:
+            cols = [c.get_text(strip=True) for c in row.find_all("td")]
+            if len(cols) > 1 and "F4" in cols[0]:
+                if final_action == "Not found":
+                    final_action = cols[1]
+                else:
+                    filing_date = cols[1]
 
     return final_action, filing_date
 
 
+def fetch_bulletin():
+    """Try each candidate domain in order until one actually works."""
+    for base_url in CANDIDATE_BASES:
+        print(f"Trying {base_url} ...")
+        title, link = get_latest_link(base_url)
+
+        if not title:
+            print(f"  -> blocked or unavailable on {base_url}")
+            continue
+
+        new_A, new_B = get_f4_data(link)
+
+        if new_A == "Not found" and new_B == "Not found":
+            print(f"  -> got a page on {base_url} but could not find F4 rows")
+            continue
+
+        print(f"  -> success via {base_url}: {title}")
+        return title, new_A, new_B
+
+    return None, None, None
+
+
 # ================= MAIN =================
 
-title, pdf_bytes = find_latest_bulletin_pdf()
+title, new_A, new_B = fetch_bulletin()
 
 if not title:
     notify_ntfy(
-        "⚠️ Visa bulletin checker: could not find a current bulletin PDF "
-        "at travel.state.gov. URL pattern or publishing schedule may have "
-        "changed."
+        "⚠️ Visa bulletin checker: could not reach any working source "
+        "(travel.state.gov or its mirror) or could not find the F4 rows. "
+        "Site structure or protection may have changed further."
     )
     sys.exit(0)
 
@@ -236,15 +243,6 @@ while len(old) < 3:
     old.append("")
 
 old_title, old_A, old_B = old[0], old[1], old[2]
-
-new_A, new_B = get_f4_data(pdf_bytes)
-
-if new_A == "Not found" and new_B == "Not found":
-    notify_ntfy(
-        f"⚠️ Visa bulletin checker: found {title} but could not parse the "
-        "F4 rows. PDF layout may have changed."
-    )
-    sys.exit(0)
 
 old_A_date = parse_date(old_A)
 old_B_date = parse_date(old_B)
